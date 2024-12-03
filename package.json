@@ -1,0 +1,17 @@
+{
+  "dependencies": {
+    "assemblyai": "^4.4.7",
+    "axios": "^1.7.7",
+    "compute-cosine-similarity": "^1.1.0",
+    "fast-xml-parser": "^4.5.0",
+    "jsdom": "^25.0.1",
+    "openai": "^4.56.1",
+    "serverless": "^4.1.0",
+    "unfluff": "^1.1.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "esbuild": "^0.20.2",
+    "serverless-esbuild": "^1.52.1"
+  }
+}

@@ -1,0 +1,388 @@
+service: cm-backend
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  stage: ${opt:stage, 'dev'}
+  tags:
+    name: cm-backend
+  environment:
+    SERVICE: ${self:service}
+    STAGE: ${self:provider.stage}
+    NODE_OPTIONS: "--enable-source-maps"
+
+    TRANSCRIPTION_TABLE: ${self:service}-${self:provider.stage}-Transcriptions
+    TRANSCRIPTION_RAW_TABLE: ${self:service}-${self:provider.stage}-TranscriptionsRaw
+    CLAIM_TABLE: ${self:service}-${self:provider.stage}-Claims
+    PROJECT_TABLE: ${self:service}-${self:provider.stage}-Projects
+    FACT_CHECK_TABLE: ${self:service}-${self:provider.stage}-FactChecks
+
+    VIDEO_CHUNK_BUCKET: ${self:service}-${self:provider.stage}-chunks
+    AUDIO_CHUNKS_BUCKET: ${self:service}-${self:provider.stage}-audiochunks
+
+    CLAIMS_QUEUE: ${self:service}-${self:provider.stage}-DetectClaimsQueue
+    VIDEO_QUEUE: ${self:service}-${self:provider.stage}-GenerateVideoQueue
+
+  region: eu-central-1
+  apiGateway:
+    binaryMediaTypes:
+      - "*/*"
+  iamRoleStatements:
+    - Effect: "Allow"
+      Action:
+        - "dynamodb:Scan"
+        - "dynamodb:GetItem"
+        - "dynamodb:PutItem"
+        - "dynamodb:UpdateItem"
+        - "dynamodb:DeleteItem"
+        - "dynamodb:Query"
+      Resource:
+        - Fn::GetAtt: [TranscriptionTable, Arn]
+        - Fn::GetAtt: [TranscriptionRawTable, Arn]
+        - Fn::GetAtt: [ClaimTable, Arn]
+        - Fn::GetAtt: [FactCheckTable, Arn]
+        - Fn::GetAtt: [ProjectTable, Arn]
+        - Fn::Join:
+            - ""
+            - - "arn:aws:dynamodb:"
+              - ${self:provider.region}
+              - ":"
+              - Ref: AWS::AccountId
+              - ":table/"
+              - ${self:service}-${self:provider.stage}-Projects/index/*
+    - Effect: "Allow"
+      Action:
+        - "lambda:InvokeFunction"
+      Resource: "*"
+    - Effect: "Allow"
+      Action:
+        - "sqs:SendMessage"
+      Resource:
+        - Fn::GetAtt: [GenerateVideoQueue, Arn]
+        - Fn::GetAtt: [DetectClaimsQueue, Arn]
+    - Effect: "Allow"
+      Action:
+        - "iam:PassRole"
+      Resource:
+        - arn:aws:iam::516400917338:role/service-role/cm-mediaconvert
+    - Effect: "Allow"
+      Action:
+        - "s3:PutObject"
+        - "s3:GetObject"
+        - "s3:DeleteObject"
+        - "s3:ListBucket"
+      Resource:
+        - arn:aws:s3:::${self:service}-${self:provider.stage}-audiochunks
+        - arn:aws:s3:::${self:service}-${self:provider.stage}-audiochunks/*
+        - arn:aws:s3:::${self:service}-${self:provider.stage}-chunks
+        - arn:aws:s3:::${self:service}-${self:provider.stage}-chunks/*
+    - Effect: "Allow"
+      Action:
+        - "ssm:GetParameter"
+      Resource:
+        - "Fn::Join":
+            [
+              "",
+              [
+                "arn:aws:ssm:${self:provider.region}:",
+                { "Ref": "AWS::AccountId" },
+                ":parameter/${self:service}/${self:provider.stage}/keys",
+              ],
+            ]
+    - Effect: "Allow"
+      Action:
+        - "mediaconvert:CreateJob"
+      Resource: "*"
+  logRetentionInDays: 3
+  versionFunctions: false
+
+custom:
+  esbuild:
+    bundle: true
+    minify: true
+    sourcemap: true
+
+functions:
+  chunkReceiver:
+    name: ${self:service}-${self:provider.stage}-uploadChunk
+    handler: handler/chunkReceiver.handler
+    timeout: 30
+    events:
+      - http:
+          path: upload/chunk
+          method: post
+          cors:
+            origin: "*"
+            headers:
+              - Content-Type
+              - X-Video-Seq
+              - X-Video-Id
+  projectList:
+    name: ${self:service}-${self:provider.stage}-listProjects
+    handler: handler/project.list
+    timeout: 10
+    events:
+      - http:
+          path: projects
+          method: get
+          cors: true
+  projectManagement:
+    name: ${self:service}-${self:provider.stage}-manageProject
+    handler: handler/project.handler
+    timeout: 10
+    events:
+      - http:
+          path: projects/{projectId}
+          method: put
+          cors: true
+      - http:
+          path: projects/{projectId}
+          method: delete
+          cors: true
+  projectFinalization:
+    name: ${self:service}-${self:provider.stage}-finalization
+    handler: handler/finalization.handler
+    timeout: 30
+    events:
+      - http:
+          path: upload/end
+          method: post
+          cors: true
+  getVideo:
+    name: ${self:service}-${self:provider.stage}-getVideo
+    handler: handler/video.getVideo
+    timeout: 5
+    events:
+      - http:
+          path: video/{projectId}
+          method: get
+          cors: true
+  ping:
+    name: ${self:service}-${self:provider.stage}-ping
+    handler: handler/ping.handler
+    timeout: 10
+    events:
+      - http:
+          path: /debug/ping/
+          method: get
+          cors: true
+  getTranscription:
+    name: ${self:service}-${self:provider.stage}-getTranscription
+    handler: handler/transcription.handler
+    timeout: 10
+    events:
+      - http:
+          path: /transcription/{projectId}/{seqNr}
+          method: get
+          cors: true
+  getClaims:
+    name: ${self:service}-${self:provider.stage}-getClaims
+    handler: handler/sentences.handler
+    timeout: 10
+    events:
+      - http:
+          path: /claims/{projectId}/{sentenceNr}
+          method: get
+          cors: true
+      - http:
+          path: /claims/{projectId}/
+          method: get
+          cors: true
+  putClaims:
+    name: ${self:service}-${self:provider.stage}-putClaims
+    handler: handler/sentences.correction
+    timeout: 10
+    events:
+      - http:
+          path: /claims/{projectId}/{sentenceNr}
+          method: post
+          cors: true
+      - http:
+          path: /claims/{projectId}/{sentenceNr}
+          method: put
+          cors: true
+  transcriptionCallback:
+    name: ${self:service}-${self:provider.stage}-transcriptionCallback
+    handler: handler/transcription.transcriptionCallback
+    timeout: 10
+    events:
+      - http:
+          path: /callback/assemblyai/
+          method: post
+          cors: true
+  transcriptionGlue:
+    name: ${self:service}-${self:provider.stage}-transcriptionGlue
+    handler: handler/transcription.transcriptionGlue
+    events:
+      - stream:
+          type: dynamodb
+          arn:
+            Fn::GetAtt: [TranscriptionRawTable, StreamArn]
+          batchSize: 10
+  s3trigger:
+    name: ${self:service}-${self:provider.stage}-s3trigger
+    handler: handler/s3trigger.handler
+    timeout: 10
+    events:
+      - s3:
+          existing: true
+          bucket: ${self:service}-${self:provider.stage}-audiochunks
+          event: s3:ObjectCreated:*
+  generateVideo:
+    name: ${self:service}-${self:provider.stage}-generateVideo
+    handler: handler/generateVideo.handler
+    timeout: 10
+    events:
+      - sqs:
+          arn:
+            Fn::GetAtt:
+              - GenerateVideoQueue
+              - Arn
+  detectClaims:
+    name: ${self:service}-${self:provider.stage}-detectClaims
+    handler: handler/claims.detectClaims
+    timeout: 15
+    events:
+      - sqs:
+          arn:
+            Fn::GetAtt:
+              - DetectClaimsQueue
+              - Arn
+  factCheck:
+    name: ${self:service}-${self:provider.stage}-factCheck
+    handler: handler/claims.factCheck
+    timeout: 15
+    events:
+      - http:
+          path: /factcheck/
+          method: get
+          cors: true
+          request:
+            parameters:
+              querystrings:
+                claim: true
+                service: false
+                speaker: false
+  transcriptionsToSentences:
+    name: ${self:service}-${self:provider.stage}-transcriptionsToSentences
+    handler: handler/sentences.import
+    events:
+      - stream:
+          type: dynamodb
+          arn:
+            Fn::GetAtt: [TranscriptionTable, StreamArn]
+          batchSize: 100
+
+resources:
+  Resources:
+    GenerateVideoQueue:
+      Type: "AWS::SQS::Queue"
+      Properties:
+        QueueName: ${self:service}-${self:provider.stage}-GenerateVideoQueue
+
+    DetectClaimsQueue:
+      Type: "AWS::SQS::Queue"
+      Properties:
+        QueueName: ${self:service}-${self:provider.stage}-DetectClaimsQueue
+
+    ProjectTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-${self:provider.stage}-Projects
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: userId
+            AttributeType: S
+          - AttributeName: projectId
+            AttributeType: S
+          - AttributeName: timeChanged
+            AttributeType: N
+        KeySchema:
+          - AttributeName: userId
+            KeyType: HASH
+          - AttributeName: projectId
+            KeyType: RANGE
+        GlobalSecondaryIndexes:
+          - IndexName: projectId-timeChanged-index
+            KeySchema:
+              - AttributeName: projectId
+                KeyType: HASH
+              - AttributeName: timeChanged
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+
+    TranscriptionTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-${self:provider.stage}-Transcriptions
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: projectId
+            AttributeType: S
+          - AttributeName: seqNr
+            AttributeType: N
+        KeySchema:
+          - AttributeName: projectId
+            KeyType: HASH
+          - AttributeName: seqNr
+            KeyType: RANGE
+        StreamSpecification:
+          StreamViewType: NEW_IMAGE
+
+    TranscriptionRawTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-${self:provider.stage}-TranscriptionsRaw
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: projectId
+            AttributeType: S
+          - AttributeName: seqNr
+            AttributeType: N
+        KeySchema:
+          - AttributeName: projectId
+            KeyType: HASH
+          - AttributeName: seqNr
+            KeyType: RANGE
+        StreamSpecification:
+          StreamViewType: NEW_IMAGE
+
+    ClaimTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-${self:provider.stage}-Claims
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: projectId
+            AttributeType: S
+          - AttributeName: sentenceNr
+            AttributeType: N
+          - AttributeName: srcSeq
+            AttributeType: N
+        KeySchema:
+          - AttributeName: projectId
+            KeyType: HASH
+          - AttributeName: sentenceNr
+            KeyType: RANGE
+        GlobalSecondaryIndexes:
+          - IndexName: projectId-srcSeq-index
+            KeySchema:
+              - AttributeName: projectId
+                KeyType: HASH
+              - AttributeName: srcSeq
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+
+    FactCheckTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-${self:provider.stage}-FactChecks
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: claimID
+            AttributeType: S
+        KeySchema:
+          - AttributeName: claimID
+            KeyType: HASH

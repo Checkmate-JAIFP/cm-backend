@@ -4,7 +4,7 @@ module.exports.sendMessageToVideoQueue = async (id, stop, segmentSize) => {
   try {
     const client = new SQSClient({});
     const input = {
-      QueueUrl: `https://sqs.eu-central-1.amazonaws.com/516400917338/${process.env.VIDEO_QUEUE}`,
+      QueueUrl: `https://sqs.eu-central-1.amazonaws.com/[AWS ACCOUNT NUMBER]/${process.env.VIDEO_QUEUE}`,
       MessageBody: `{"id":"${id}","stop":${stop},"segmentSize":${segmentSize}}`,
       DelaySeconds: 1,
     };
@@ -23,7 +23,7 @@ module.exports.sendMessageToClaimQueue = async (message) => {
   try {
     const client = new SQSClient({});
     const input = {
-      QueueUrl: `https://sqs.eu-central-1.amazonaws.com/516400917338/${process.env.CLAIMS_QUEUE}`,
+      QueueUrl: `https://sqs.eu-central-1.amazonaws.com/[AWS ACCOUNT NUMBER]/${process.env.CLAIMS_QUEUE}`,
       MessageBody: `${message}`,
       DelaySeconds: 1,
     };
